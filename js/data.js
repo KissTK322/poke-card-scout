@@ -68,8 +68,9 @@ export const CHAR_TIERS = [
 ];
 export const DEFAULT_CHAR = { tier: "C", score: 0.4 };
 
-// น้ำหนักคะแนน (รวม = 1)
-export const WEIGHTS = { char: 0.25, rarity: 0.20, grader: 0.15, lang: 0.10, era: 0.10, deal: 0.20 };
+// น้ำหนักคะแนน (รวม = 1) — liquidity/supply ใช้เมื่อมีข้อมูล ถ้าไม่มีจะกระจายน้ำหนักให้ส่วนอื่นอัตโนมัติ
+// ปรับได้ตาม "น้ำหนักที่แนะนำ" ในแท็บ Backtest เมื่อมีข้อมูลสะสมพอ
+export const WEIGHTS = { char: 0.22, rarity: 0.17, grader: 0.12, lang: 0.08, era: 0.08, deal: 0.18, liquidity: 0.08, supply: 0.07 };
 
 export const BUDGETS = [
   { id: "all", name: "ทุกงบ" },

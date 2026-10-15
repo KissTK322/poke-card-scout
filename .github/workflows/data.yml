@@ -1,0 +1,56 @@
+name: Update market data
+
+on:
+  schedule:
+    - cron: "0 19 * * *"   # 02:00 Bangkok every day
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: data
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Japan shop prices (pokecazilla)
+        continue-on-error: true
+        run: python pipeline/jp_pokecazilla.py
+
+      - name: English prices (pokemontcg.io)
+        continue-on-error: true
+        env:
+          POKEMONTCG_API_KEY: ${{ secrets.POKEMONTCG_API_KEY }}
+        run: python pipeline/en_pokemontcg.py
+
+      - name: Thai catalog (official)
+        continue-on-error: true
+        run: python pipeline/th_official.py
+
+      - name: PSA population
+        continue-on-error: true
+        env:
+          PSA_TOKEN: ${{ secrets.PSA_TOKEN }}
+        run: python pipeline/psa_pop.py
+
+      - name: Backtest
+        continue-on-error: true
+        run: python pipeline/backtest.py
+
+      - name: Commit data
+        run: |
+          git config user.name "poke-card-scout-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data
+          git diff --cached --quiet || git commit -m "data: $(date -u +%F)"
+          git pull --rebase -X theirs origin main || true
+          git push

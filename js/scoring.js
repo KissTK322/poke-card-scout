@@ -95,6 +95,19 @@ export function appraise(input) {
   const maxBid = fair != null ? Math.max(0, Math.floor((fair * (1 - discount) - shipping) / 10) * 10) : null;
   const bid = Number(input.bid) || 0;
 
+  // สภาพคล่อง: ส่วนต่างราคาร้านรับซื้อ/ขาย (ยิ่งห่าง ยิ่งขายต่อขาดทุน)
+  const sell = Number(input.mktSell) || 0, buyP = Number(input.mktBuy) || 0;
+  const spread = sell && buyP ? Math.min(1, Math.max(0, 1 - buyP / sell)) : null;
+  // ซัพพลาย: จำนวน PSA 10 ในระบบ + อัตราได้ 10 (ได้ง่าย = จะมีของเพิ่มอีกเรื่อย ๆ)
+  const pop10 = input.pop10 !== "" && input.pop10 != null ? Number(input.pop10) : null;
+  const popTotal = Number(input.popTotal) || 0;
+  let supply = null;
+  if (pop10 != null && !isNaN(pop10)) {
+    const scarcity = Math.min(1, Math.max(0.05, 1 - Math.log10(pop10 + 1) / 4));
+    const gem = popTotal ? pop10 / popTotal : 0.5;
+    supply = 0.7 * scarcity + 0.3 * (1 - gem);
+  }
+
   const parts = {
     char: char.score,
     rarity: rarity.score,
@@ -102,8 +115,14 @@ export function appraise(input) {
     lang: lang.score,
     era: era.score,
     deal: dealScore(bid, maxBid),
+    liquidity: spread == null ? null : 1 - spread,
+    supply,
   };
-  const score = Math.round(Object.entries(WEIGHTS).reduce((s, [k, w]) => s + w * parts[k], 0) * 100);
+  const used = Object.entries(WEIGHTS).filter(([k]) => parts[k] != null);
+  const wsum = used.reduce((s, [, w]) => s + w, 0);
+  const score = Math.round((used.reduce((s, [k, w]) => s + w * parts[k], 0) / wsum) * 100);
+  if (spread != null) notes.push(`ร้านรับซื้อต่ำกว่าราคาขาย ${Math.round(spread * 100)}% — ถ้าซื้อแล้วขายคืนร้านทันทีจะเสียประมาณนี้`);
+  if (pop10 != null) notes.push(`PSA 10 ในระบบ ${pop10.toLocaleString()} ใบ${popTotal ? ` จากที่ส่งเกรด ${popTotal.toLocaleString()} ใบ (ได้ 10 = ${Math.round((pop10 / popTotal) * 100)}%)` : ""}`);
 
   let verdict, tone;
   if (maxBid != null && bid > maxBid * 1.15) { verdict = "แพงเกินไป — อย่าไล่ราคา"; tone = "bad"; }
@@ -122,7 +141,7 @@ export function appraise(input) {
     notes.push(`ถ้าซื้อดิบแล้วส่ง PSA (ค่าส่งราว ${fmt(fee)}): มูลค่าคาดหวังราว ${fmt(ev)} ต่อใบ เทียบใบดิบ ${fmt(raw)} → ${ev > raw * 1.15 ? "คุ้มที่จะส่งเกรด" : "ไม่ค่อยคุ้มส่งเกรด"}`);
   }
 
-  return { score, verdict, tone, parts, char, unit, fair, maxBid, bid, discount, method, confidence, notes, raw, psa10, ratio, qty };
+  return { score, verdict, tone, parts, spread, char, unit, fair, maxBid, bid, discount, method, confidence, notes, raw, psa10, ratio, qty };
 }
 
 export function fmt(n) {

@@ -1,5 +1,7 @@
 import { GRADERS, GRADES, CONDITIONS, LANGS, RARITIES, ERAS, BUDGETS, CATEGORIES, WATCHLIST } from "./data.js";
 import { appraise, fmt } from "./scoring.js";
+import { searchAll, coverage, history, sparkline, rarityToModel, matchMarket, loadBacktest } from "./market.js";
+import { parseText, getLog, saveLog, findComps, toCSV, fromJSON, backtestLog } from "./soldlog.js";
 
 const API = "https://api.tcgdex.net/v2";
 const $ = (s, el = document) => el.querySelector(s);
@@ -13,18 +15,22 @@ const store = {
 };
 
 // ---------- อัตราแลกเปลี่ยน ----------
-const rates = { THB: store.get("pcs-fx", 33.6), EUR: 0.9 };
+const rates = { THB: store.get("pcs-fx", 33.6), EUR: 0.9, JPY: 150 };
+let jpyThb = store.get("pcs-fx-jpy", null);
 const fxInput = $("#fx");
 fxInput.value = rates.THB;
 fxInput.addEventListener("change", () => { rates.THB = Number(fxInput.value) || rates.THB; store.set("pcs-fx", rates.THB); renderRecommend(); });
 fetch("https://open.er-api.com/v6/latest/USD").then((r) => r.json()).then((d) => {
   if (d?.rates?.THB && !store.get("pcs-fx-manual", false)) { rates.THB = +d.rates.THB.toFixed(2); fxInput.value = rates.THB; }
   if (d?.rates?.EUR) rates.EUR = d.rates.EUR;
+  if (d?.rates?.JPY) rates.JPY = d.rates.JPY;
+  const fj = $("#fx-jpy"); if (fj && !jpyThb) fj.value = (rates.THB / rates.JPY).toFixed(3);
 }).catch(() => {});
 fxInput.addEventListener("input", () => store.set("pcs-fx-manual", true));
 
 const usdToThb = (usd) => usd * rates.THB;
 const eurToThb = (eur) => (eur / rates.EUR) * rates.THB;
+const jpyToThb = (jpy) => jpy * (jpyThb || rates.THB / rates.JPY);
 
 // ---------- TCGdex ----------
 async function getCard(ref) {
@@ -88,6 +94,8 @@ function showTab(name) {
   $$(".tab").forEach((t) => t.classList.toggle("active", t.id === `tab-${name}`));
   store.set("pcs-tab", name);
   if (name === "saved") renderSaved();
+  if (name === "log") renderLog();
+  if (name === "backtest") renderBacktest();
   window.scrollTo({ top: 0 });
 }
 $$(".tabs button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
@@ -158,10 +166,61 @@ $("#rec-grid").addEventListener("click", (e) => {
   openDetail(recCache.get(w.tcg) || null, w, el.querySelector("img")?.src);
 });
 
-// ---------- ค้นหา ----------
+// ---------- ค้นหา (ฐานข้อมูลของเรา EN/JP/TH + TCGdex ภาษาอื่น) ----------
+const qLang = $("#q-lang"), qOther = $("#q-other");
+qLang.addEventListener("change", () => { qOther.hidden = qLang.value !== "tcgdex"; });
 $("#search-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  await runSearch($("#q").value.trim(), $("#q-lang").value);
+  const q = $("#q").value.trim();
+  if (qLang.value === "tcgdex") await runSearch(q, qOther.value);
+  else await runMarketSearch(q, qLang.value === "all" ? ["en", "ja", "th"] : [qLang.value]);
+});
+
+coverage().then((c) => {
+  const parts = [c.en && `EN ${c.en.toLocaleString()} ใบ`, c.jp && `JP ${c.jp.toLocaleString()} ใบ (ราคาร้าน)`, c.th && `TH ${c.th.toLocaleString()} ใบ`].filter(Boolean);
+  $("#coverage").textContent = parts.length
+    ? `ฐานข้อมูล: ${parts.join(" · ")} · อัปเดต ${c.jpUpdated || c.enUpdated || c.thUpdated} · ภาษาอื่นค้นผ่าน TCGdex`
+    : "ฐานข้อมูลตลาดยังไม่พร้อม — ใช้ TCGdex ชั่วคราว";
+});
+
+const marketResults = new Map();
+function priceLine(c) {
+  if (c.market === "jp") {
+    const parts = [];
+    if (c.sell) parts.push(`ร้านญี่ปุ่นขาย ¥${c.sell.toLocaleString()} (~${fmt(jpyToThb(c.sell))})`);
+    if (c.buy) parts.push(`รับซื้อ ¥${c.buy.toLocaleString()}`);
+    return parts.join(" · ");
+  }
+  if (c.market === "en") return c.usd ? `$${c.usd} (~${fmt(usdToThb(c.usd))})` : c.eur?.trend ? `€${c.eur.trend}` : "";
+  return "ยังไม่มีราคาตลาดไทย — ดูในบันทึกราคาขาย";
+}
+
+async function runMarketSearch(raw, langs) {
+  const st = $("#search-status"), grid = $("#search-grid");
+  st.textContent = "กำลังค้นหา…"; grid.innerHTML = "";
+  const { total, items } = await searchAll(raw, langs, 120);
+  if (!items.length) {
+    st.textContent = "ไม่พบในฐานข้อมูลของเรา — ลองค้นผ่าน TCGdex";
+    return runSearch(raw, langs.length === 1 ? langs[0] : "en");
+  }
+  marketResults.clear();
+  st.textContent = `พบ ${total.toLocaleString()} ใบ${total > items.length ? ` (แสดง ${items.length} ใบที่ราคาสูงสุด)` : ""} — แตะเพื่อดูราคา กราฟ และประเมิน`;
+  grid.innerHTML = items.map((c, i) => {
+    marketResults.set(String(i), c);
+    return `<article class="card" data-mk="${i}">
+      ${artHtml(c.img, c.name, LANG_BADGE[c.lang], c.rarity)}
+      <div class="body"><h3>${esc(c.name)}</h3>
+        <div class="meta">${esc(c.setName)} · ${esc(c.number)}</div>
+        <div class="price">${esc(priceLine(c))}</div></div></article>`;
+  }).join("");
+}
+
+$("#search-grid").addEventListener("click", async (e) => {
+  const mk = e.target.closest("[data-mk]");
+  if (mk) return openMarketDetail(marketResults.get(mk.dataset.mk), mk.querySelector("img")?.src);
+  const el = e.target.closest("[data-ref]"); if (!el) return;
+  try { openDetail(await getCard(el.dataset.ref), null, el.querySelector("img")?.src); }
+  catch { $("#search-status").textContent = "โหลดรายละเอียดไม่สำเร็จ"; }
 });
 
 async function runSearch(raw, lang, target = { grid: $("#search-grid"), status: $("#search-status") }) {
@@ -169,19 +228,19 @@ async function runSearch(raw, lang, target = { grid: $("#search-grid"), status: 
   const name = (num ? raw.slice(0, num.index) : raw).trim() || raw;
   const params = new URLSearchParams({ name, "pagination:itemsPerPage": "60" });
   if (num && name !== raw) params.set("localId", num[1].padStart(lang === "en" ? 1 : 3, "0"));
-  target.status.textContent = "กำลังค้นหา…";
+  target.status.textContent = "กำลังค้นหาผ่าน TCGdex…";
   target.grid.innerHTML = "";
   try {
     let res = await fetch(`${API}/${lang}/cards?${params}`).then((r) => r.json());
     if ((!Array.isArray(res) || !res.length) && params.has("localId")) {
-      params.set("localId", num[1]); // เลขไม่เติม 0
+      params.set("localId", num[1]);
       res = await fetch(`${API}/${lang}/cards?${params}`).then((r) => r.json());
     }
     if (!Array.isArray(res) || !res.length) { target.status.textContent = "ไม่พบการ์ด ลองสะกดใหม่ หรือเปลี่ยนภาษา"; return []; }
-    res = res.reverse(); // ชุดใหม่มาก่อน
-    target.status.textContent = `พบ ${res.length} ใบ — แตะเพื่อดูราคาและประเมิน`;
+    res = res.reverse();
+    target.status.textContent = `TCGdex พบ ${res.length} ใบ — แตะเพื่อดูรายละเอียด`;
     target.grid.innerHTML = res.map((c) => `<article class="card" data-ref="${lang}:${esc(c.id)}">
-      ${artHtml(imgUrl({ ...c, lang, set: { id: c.id.split("-")[0] } }), c.name, LANG_BADGE[lang])}${lang === "th" && !c.image ? `<span class="badge src static">ภาพจากเวอร์ชัน JP</span>` : ""}
+      ${artHtml(imgUrl({ ...c, lang, set: { id: c.id.split("-")[0] } }), c.name, (LANG_BADGE[lang] || lang).toUpperCase())}${lang === "th" && !c.image ? `<span class="badge src static">ภาพจากเวอร์ชัน JP</span>` : ""}
       <div class="body"><h3>${esc(c.name)}</h3><div class="meta">${esc(c.id)}</div></div></article>`).join("");
     return res;
   } catch {
@@ -190,11 +249,73 @@ async function runSearch(raw, lang, target = { grid: $("#search-grid"), status: 
   }
 }
 
-$("#search-grid").addEventListener("click", async (e) => {
-  const el = e.target.closest("[data-ref]"); if (!el) return;
-  try { openDetail(await getCard(el.dataset.ref), null, el.querySelector("img")?.src); }
-  catch { $("#search-status").textContent = "โหลดรายละเอียดไม่สำเร็จ"; }
-});
+// ---------- รายละเอียดการ์ดจากฐานข้อมูลตลาด ----------
+async function openMarketDetail(c, fallbackImg) {
+  if (!c) return;
+  const src = c.img || fallbackImg;
+  const comps = findComps(`${c.name} ${c.number}`, { lang: c.lang });
+  const q = encodeURIComponent(`${c.name} ${String(c.number).split("/")[0]} ${c.lang === "ja" ? "japanese" : c.lang === "th" ? "thai" : ""}`.trim());
+  const spread = c.sell && c.buy ? 1 - c.buy / c.sell : null;
+  $("#modal-body").innerHTML = `<button class="btn small close" data-close>ปิด</button>
+    <div class="modal">
+      ${src ? `<img src="${esc(src)}" alt="${esc(c.name)}" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ph',textContent:'ยังไม่มีรูป'}))">` : `<div class="art"><div class="ph">ยังไม่มีรูป</div></div>`}
+      <div>
+        <h2>${esc(c.name)}</h2>
+        <div class="meta">${esc([c.setName, c.number, c.rarity, LANG_BADGE[c.lang]].filter(Boolean).join(" · "))}</div>
+        <dl class="kv" style="margin:14px 0">
+          ${c.market === "jp" ? `
+            <dt>ร้านในญี่ปุ่นขายถูกสุด</dt><dd>${c.sell ? `¥${c.sell.toLocaleString()} · ${fmt(jpyToThb(c.sell))}` : "–"}</dd>
+            <dt>ร้านรับซื้อสูงสุด</dt><dd>${c.buy ? `¥${c.buy.toLocaleString()} · ${fmt(jpyToThb(c.buy))}` : "–"}</dd>
+            <dt class="hint" style="grid-column:1/-1">ราคาในญี่ปุ่น ยังไม่รวมค่าส่ง/นำเข้า (ในไทยมักแพงกว่า 1.5–3 เท่าสำหรับใบราคาถูก)</dt>
+            ${spread != null ? `<dt>ส่วนต่างซื้อ-ขาย</dt><dd class="tone-${spread > 0.45 ? "bad" : spread > 0.25 ? "ok" : "good"}">${Math.round(spread * 100)}%</dd>` : ""}` : ""}
+          ${c.market === "en" ? `
+            <dt>TCGplayer (${esc(c.variant || "-")})</dt><dd>${c.usd ? `$${c.usd} · ${fmt(usdToThb(c.usd))}` : "–"}</dd>
+            ${c.eur?.a30 ? `<dt>Cardmarket เฉลี่ย 30 วัน / 7 วัน</dt><dd>€${c.eur.a30} / €${c.eur.a7 ?? "–"}</dd>` : ""}
+            ${c.eur?.a30 && c.eur?.a7 ? `<dt>โมเมนตัม 7 วัน vs 30 วัน</dt><dd class="tone-${c.eur.a7 >= c.eur.a30 ? "good" : "bad"}">${((c.eur.a7 / c.eur.a30 - 1) * 100).toFixed(1)}%</dd>` : ""}` : ""}
+          ${comps.rows?.length ? `<dt>ในบันทึกราคาขายของคุณ</dt><dd>${comps.rows.length} รายการ</dd>` : ""}
+        </dl>
+        <div id="detail-chart" class="hint">กำลังโหลดประวัติราคา…</div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn primary" data-appraise>ประเมินใบนี้</button>
+          ${c.url ? `<a class="btn" target="_blank" rel="noopener" href="${esc(c.url)}">แหล่งข้อมูล</a>` : ""}
+          <a class="btn" target="_blank" rel="noopener" href="https://www.ebay.com/sch/i.html?_nkw=${q}&LH_Sold=1&LH_Complete=1">eBay ขายแล้ว</a>
+          <a class="btn" target="_blank" rel="noopener" href="https://www.psacard.com/pop/search?q=${q}">PSA Pop</a>
+        </div>
+      </div>
+    </div>`;
+  const dlg = $("#modal");
+  dlg.showModal();
+  $("[data-close]", dlg).onclick = () => dlg.close();
+  $("[data-appraise]", dlg).onclick = () => { dlg.close(); prefillFromMarket(c, src); showTab("appraise"); };
+  if (c.market !== "th") {
+    const h = await history(c.market, c.id);
+    const el = $("#detail-chart");
+    if (el) el.innerHTML = c.market === "jp" ? sparkline(h, ["ราคาขาย ¥", "รับซื้อ ¥"]) : sparkline(h, ["TCGplayer $", "Cardmarket €"]);
+  } else $("#detail-chart").textContent = "";
+}
+
+function prefillFromMarket(c, src) {
+  form.reset();
+  setTimeout(() => {
+    const f = form.elements;
+    f.name.value = `${c.name} ${c.number}`.trim();
+    f.lang.value = c.lang;
+    f.rarity.value = rarityToModel(c.rarity, c.lang === "en" ? "en" : "ja");
+    f.era.value = eraFromDate(c.release) || "modern";
+    if (c.market === "jp" && c.sell) { f.compsRaw.value = Math.round(jpyToThb(c.sell)); f.mktSell.value = c.sell; f.mktBuy.value = c.buy || ""; }
+    if (c.market === "en" && c.usd) f.compsRaw.value = Math.round(usdToThb(c.usd));
+    f.grader.value = "raw";
+    if (src) setPhoto(src);
+    update();
+    refreshAppraiseHelpers();
+  });
+}
+
+function eraFromDate(d) {
+  if (!d) return null;
+  const years = (Date.now() - Date.parse(d.replace(/\//g, "-"))) / (365.25 * 864e5);
+  return years < 0.25 ? "new" : years < 1 ? "recent" : years < 5 ? "modern" : years < 15 ? "older" : "vintage";
+}
 
 // ---------- modal รายละเอียด ----------
 function openDetail(card, rec, fallbackImg) {
@@ -270,7 +391,7 @@ function update() {
     box.innerHTML = `<p class="empty">ใส่ชื่อการ์ดและราคาที่ขายได้จริงอย่างน้อย 1 ช่อง แล้วระบบจะคำนวณคะแนนกับราคาประมูลสูงสุดให้ทันที<br><br>หรือไปที่แท็บ <b>ค้นหา</b> / <b>แนะนำ</b> แล้วกด "ประเมินใบนี้"</p>`;
     return;
   }
-  const labels = { char: `ตัวละคร (${r.char.tier})`, rarity: "ความหายาก", grader: "เจ้าเกรด", lang: "ภาษา", era: "อายุชุด", deal: "ความคุ้ม" };
+  const labels = { char: `ตัวละคร (${r.char.tier})`, rarity: "ความหายาก", grader: "เจ้าเกรด", lang: "ภาษา", era: "อายุชุด", deal: "ความคุ้ม", liquidity: "สภาพคล่อง", supply: "ซัพพลาย PSA" };
   const diff = r.maxBid != null && r.bid ? r.bid - r.maxBid : null;
   box.innerHTML = `
     <div class="score-ring tone-${r.tone}">
@@ -285,7 +406,7 @@ function update() {
       ${diff != null ? `<dt>${diff > 0 ? "แพงกว่าเพดาน" : "ยังต่ำกว่าเพดาน"}</dt><dd class="tone-${diff > 0 ? "bad" : "good"}">${fmt(Math.abs(diff))}</dd>` : ""}
       <dt>ส่วนเผื่อที่หัก</dt><dd>${Math.round(r.discount * 100)}%</dd>
     </dl>
-    <div class="bars">${Object.entries(r.parts).map(([k, v]) => `<div class="bar"><span>${labels[k]}</span><i style="--v:${v}"></i><span>${Math.round(v * 100)}</span></div>`).join("")}</div>
+    <div class="bars">${Object.entries(r.parts).filter(([, v]) => v != null).map(([k, v]) => `<div class="bar"><span>${labels[k]}</span><i style="--v:${v}"></i><span>${Math.round(v * 100)}</span></div>`).join("")}</div>
     ${r.notes.length ? `<ul class="notes">${r.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
     ${r.method ? `<div class="method">วิธีคิด: ${esc(r.method)}</div>` : ""}`;
 }
@@ -504,6 +625,235 @@ $("#saved-list").addEventListener("click", (e) => {
   }
   if (del && confirm("ลบรายการนี้?")) { store.set("pcs-saved", saved.filter((x) => x.id != del.dataset.del)); renderSaved(); }
 });
+
+// ---------- ตัวช่วยในฟอร์มประเมิน: ราคาตลาด + บันทึกราคาขาย ----------
+let helperTimer;
+form.addEventListener("input", (e) => {
+  if (["name", "lang", "grader", "grade"].includes(e.target.name)) {
+    clearTimeout(helperTimer);
+    helperTimer = setTimeout(refreshAppraiseHelpers, 400);
+  }
+});
+form.addEventListener("change", (e) => { if (["lang", "grader", "grade"].includes(e.target.name)) refreshAppraiseHelpers(); });
+
+const matchCache = new Map();
+async function refreshAppraiseHelpers() {
+  const f = form.elements;
+  const name = f.name.value.trim();
+  const box = $("#market-match");
+  if (!name) { box.textContent = "พิมพ์ชื่อการ์ดแล้วระบบจะหาราคาตลาดให้"; $("#log-comps").innerHTML = ""; return; }
+  const items = await matchMarket(name, f.lang.value);
+  matchCache.clear();
+  box.innerHTML = items.length
+    ? `<div class="match-list">${items.slice(0, 4).map((c, i) => { matchCache.set(String(i), c); return `
+        <div class="match"><span><b>${esc(c.name)}</b> <span class="hint">${esc(c.setName)} ${esc(c.number)} ${esc(c.rarity || "")} · ${LANG_BADGE[c.lang]}</span><br>${esc(priceLine(c))}</span>
+        <button class="btn small" type="button" data-use="${i}">ใช้ราคานี้</button></div>`; }).join("")}</div>`
+    : `<span class="hint">ไม่พบในฐานข้อมูลตลาด — ลองพิมพ์ชื่อภาษาเดียวกับการ์ด + เลขการ์ด</span>`;
+
+  const comps = findComps(name, { grader: f.grader.value, grade: f.grade.value, lang: f.lang.value });
+  const n = (comps.rows || []).length;
+  $("#log-comps").innerHTML = n
+    ? `พบในบันทึกราคาขาย ${n} รายการ (เกรดเดียวกัน ${comps.same.length} · ดิบ ${comps.raw.length} · PSA10 ${comps.psa10.length}) <button class="btn small" type="button" id="use-log">ใส่ราคาจากบันทึก</button>`
+    : "";
+  if (n) $("#use-log").onclick = () => {
+    if (comps.same.length) f.compsSame.value = comps.same.map(Math.round).join(" ");
+    if (comps.raw.length) f.compsRaw.value = comps.raw.map(Math.round).join(" ");
+    if (comps.psa10.length) f.compsPsa10.value = comps.psa10.map(Math.round).join(" ");
+    update();
+  };
+}
+$("#market-match").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-use]"); if (!b) return;
+  const c = matchCache.get(b.dataset.use), f = form.elements;
+  if (c.market === "jp") { f.compsRaw.value = c.sell ? Math.round(jpyToThb(c.sell)) : ""; f.mktSell.value = c.sell || ""; f.mktBuy.value = c.buy || ""; }
+  else if (c.market === "en" && c.usd) { f.compsRaw.value = Math.round(usdToThb(c.usd)); f.mktSell.value = ""; f.mktBuy.value = ""; }
+  if (!f.image.value && c.img) setPhoto(c.img);
+  update();
+});
+
+// ---------- PSA Population ----------
+$("#psa-lookup").addEventListener("click", async () => {
+  const st = $("#psa-status");
+  const token = store.get("pcs-psa-token", "");
+  const cert = $("#psa-cert").value.replace(/\D/g, "");
+  if (!token) { st.textContent = "ยังไม่ได้ใส่ PSA API token (แท็บ 'วิธีคิด' → ตั้งค่า)"; return; }
+  if (!cert) { st.textContent = "ใส่เลข cert PSA ก่อน (ดูบนป้ายกรอบ)"; return; }
+  const h = { Authorization: `Bearer ${token}` };
+  st.textContent = "กำลังดึงข้อมูลจาก PSA…";
+  try {
+    const c = await fetch(`https://api.psacard.com/publicapi/cert/GetByCertNumber/${cert}`, { headers: h }).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); });
+    const p = c.PSACert || {};
+    let pop10 = null, total = null;
+    if (p.SpecID) {
+      const s = await fetch(`https://api.psacard.com/publicapi/pop/GetPSASpecPopulation/${p.SpecID}`, { headers: h }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      pop10 = s?.PSAPop?.Grade10 ?? null; total = s?.PSAPop?.Total ?? null;
+    }
+    if (pop10 == null && String(p.CardGrade || "").includes("10")) pop10 = p.TotalPopulation;
+    if (pop10 != null) form.elements.pop10.value = pop10;
+    if (total != null) form.elements.popTotal.value = total;
+    st.textContent = `${p.Year || ""} ${p.Brand || ""} ${p.Subject || ""} #${p.CardNumber || ""} — cert นี้เกรด ${p.CardGrade || "?"} (เกรดนี้มี ${p.TotalPopulation ?? "?"} ใบ, สูงกว่า ${p.PopulationHigher ?? "?"} ใบ)`;
+    update();
+  } catch (e) {
+    st.textContent = `ดึงไม่ได้ (${e.message}) — token ผิด, เกินโควตารายวัน หรือ cert ไม่ถูกต้อง · กรอกเองจาก PSA Pop Report ได้`;
+  }
+});
+
+// ---------- แท็บบันทึกราคาขาย ----------
+let preview = [];
+const GRADER_OPTS = GRADERS.map((g) => `<option value="${g.id}">${g.name}</option>`).join("");
+const LANG_OPTS = `<option value="">?</option>` + LANGS.map((l) => `<option value="${l.id}">${l.id.toUpperCase()}</option>`).join("");
+
+$("#log-parse").addEventListener("click", () => {
+  preview = parseText($("#log-text").value);
+  $("#log-parse-status").textContent = preview.length ? `แยกได้ ${preview.length} รายการ — ตรวจแก้แล้วกดบันทึก` : "ไม่พบราคาในข้อความ (ต้องมีคำว่า ปิด/จบ/sold หรือหน่วย บาท/฿/.-/k)";
+  renderPreview();
+});
+
+function rowInputs(r, i) {
+  return `<tr data-i="${i}">
+    <td><input type="date" data-k="date" value="${esc(r.date)}"></td>
+    <td><input data-k="name" value="${esc(r.name)}"></td>
+    <td><input data-k="number" value="${esc(r.number)}" size="7"></td>
+    <td><select data-k="lang">${LANG_OPTS}</select></td>
+    <td><select data-k="grader"><option value="">?</option>${GRADER_OPTS}</select></td>
+    <td><input data-k="grade" value="${esc(r.grade)}" size="3"></td>
+    <td><input type="number" data-k="qty" value="${r.qty || 1}" min="1" style="width:56px"></td>
+    <td><input type="number" data-k="price" value="${r.price}" style="width:96px"></td>
+    <td><button class="btn small" type="button" data-drop="${i}">ลบ</button></td></tr>`;
+}
+function renderPreview() {
+  const el = $("#log-preview");
+  if (!preview.length) { el.innerHTML = ""; return; }
+  el.innerHTML = `<div class="table-wrap"><table class="tbl"><thead><tr><th>วันที่</th><th>ชื่อการ์ด</th><th>เลข</th><th>ภาษา</th><th>เจ้าเกรด</th><th>เกรด</th><th>ใบ</th><th>ราคา (฿ รวม)</th><th></th></tr></thead>
+    <tbody>${preview.map(rowInputs).join("")}</tbody></table></div>
+    <div class="row"><button class="btn primary" type="button" id="log-save">บันทึก ${preview.length} รายการ</button></div>`;
+  $$("#log-preview tr[data-i]").forEach((tr) => {
+    const r = preview[+tr.dataset.i];
+    $("[data-k=lang]", tr).value = r.lang || "";
+    $("[data-k=grader]", tr).value = r.grader || "";
+  });
+  $("#log-save").onclick = () => {
+    const rows = getLog();
+    const ok = saveLog([...preview.map((r) => ({ ...r, qty: +r.qty || 1, price: +r.price })), ...rows]);
+    $("#log-parse-status").textContent = ok ? `บันทึกแล้ว ${preview.length} รายการ` : "บันทึกไม่ได้ (เบราว์เซอร์ปิดการเก็บข้อมูล)";
+    preview = []; renderPreview(); renderLog(); $("#log-text").value = "";
+  };
+}
+$("#log-preview").addEventListener("input", (e) => {
+  const tr = e.target.closest("tr[data-i]"); if (!tr) return;
+  preview[+tr.dataset.i][e.target.dataset.k] = e.target.value;
+});
+$("#log-preview").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-drop]"); if (!b) return;
+  preview.splice(+b.dataset.drop, 1); renderPreview();
+});
+
+function renderLog() {
+  const all = getLog().sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const f = ($("#log-filter").value || "").toLowerCase();
+  const rows = f ? all.filter((r) => `${r.name} ${r.number}`.toLowerCase().includes(f)) : all;
+  $("#log-count").textContent = `(${all.length} รายการ)`;
+  const gname = (r) => r.grader === "raw" ? "ดิบ" : `${(GRADERS.find((g) => g.id === r.grader)?.name || r.grader || "?").split(" ")[0]} ${r.grade || ""}`;
+  $("#log-table").innerHTML = rows.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>วันที่</th><th>การ์ด</th><th>ภาษา</th><th>เกรด</th><th class="num">ราคา/ใบ</th><th></th></tr></thead><tbody>
+    ${rows.slice(0, 300).map((r) => `<tr><td>${esc(r.date)}</td><td>${esc(r.name)} <span class="hint">${esc(r.number)}</span>${r.qty > 1 ? ` <span class="hint">×${r.qty}</span>` : ""}</td>
+      <td>${esc(LANG_BADGE[r.lang] || (r.lang || "?").toUpperCase())}</td><td>${esc(gname(r))}</td><td class="num">${fmt(r.price / (r.qty || 1))}</td>
+      <td><button class="btn small" type="button" data-del-log="${r.id}">ลบ</button></td></tr>`).join("")}
+    </tbody></table></div>` : `<p class="status">ยังไม่มีราคาที่บันทึก — วางข้อความจากกลุ่มประมูลด้านบน</p>`;
+}
+$("#log-filter").addEventListener("input", renderLog);
+$("#log-table").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-del-log]"); if (!b) return;
+  saveLog(getLog().filter((r) => String(r.id) !== b.dataset.delLog)); renderLog();
+});
+function download(name, text, type) {
+  const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([text], { type })), download: name });
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+$("#log-csv").onclick = () => download(`sold-log-${new Date().toISOString().slice(0, 10)}.csv`, "﻿" + toCSV(getLog()), "text/csv");
+$("#log-json").onclick = () => download(`sold-log-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify({ rows: getLog() }, null, 1), "application/json");
+$("#log-import").addEventListener("change", async (e) => {
+  const file = e.target.files[0]; if (!file) return;
+  try {
+    const rows = fromJSON(await file.text());
+    const have = new Set(getLog().map((r) => String(r.id)));
+    saveLog([...getLog(), ...rows.filter((r) => !have.has(String(r.id)))]);
+    renderLog();
+  } catch (err) { alert("นำเข้าไม่ได้: " + err.message); }
+  e.target.value = "";
+});
+
+// ---------- แท็บ Backtest ----------
+const pct = (v, d = 1) => (v == null ? "–" : `${(v * 100).toFixed(d)}%`);
+const FACTOR_TH = { score: "คะแนนรวม", char: "ตัวละคร", rarity: "ความหายาก", momentum: "โมเมนตัม 30 วัน", liquidity: "สภาพคล่อง (spread)", logprice: "ระดับราคา", age: "อายุชุด" };
+function icCell(v) {
+  if (v == null) return "<td>–</td>";
+  const tone = v > 0.05 ? "good" : v < -0.05 ? "bad" : "ok";
+  return `<td class="num tone-${tone}">${v.toFixed(3)}</td>`;
+}
+function resultTable(r) {
+  return `<table class="tbl"><thead><tr><th>ปัจจัย</th><th class="num">IC</th></tr></thead><tbody>
+    ${Object.entries(r.ic).map(([k, v]) => `<tr><td>${FACTOR_TH[k] || k}</td>${icCell(v)}</tr>`).join("")}</tbody></table>
+    <dl class="kv">
+      <dt>ตัวอย่าง</dt><dd>${r.samples.toLocaleString()} (${r.dates} รอบ)</dd>
+      <dt>ผลตอบแทน กลุ่มคะแนนสูงสุด 20%</dt><dd>${pct(r.top20_return)}</dd>
+      <dt>ผลตอบแทน กลุ่มคะแนนต่ำสุด 20%</dt><dd>${pct(r.bottom20_return)}</dd>
+      <dt>ผลตอบแทนเฉลี่ยทั้งตลาด</dt><dd>${pct(r.all_return)}</dd>
+      <dt>กลุ่มบนที่ราคาขึ้น</dt><dd>${pct(r.hit_rate_top20, 0)}</dd>
+      ${r.top20_roundtrip != null ? `<dt>ถ้าซื้อราคาร้านแล้วขายคืนร้าน (กลุ่มบน)</dt><dd>${pct(r.top20_roundtrip)}</dd>` : ""}
+    </dl>
+    ${r.suggested_weights ? `<p class="hint">น้ำหนักที่ข้อมูลแนะนำ: ${Object.entries(r.suggested_weights).map(([k, v]) => `${FACTOR_TH[k] || k} ${Math.round(v * 100)}%`).join(" · ")}</p>` : ""}`;
+}
+
+async function renderBacktest() {
+  const el = $("#bt-body");
+  el.innerHTML = `<p class="status">กำลังโหลดผล backtest…</p>`;
+  const rep = await loadBacktest();
+  const log = backtestLog();
+  const jp = rep?.jp_forward;
+  const horizons = jp ? Object.entries(jp.horizons) : [];
+  el.innerHTML = `
+    <div class="panel prose-lite">
+      <h2>Backtest คืออะไร</h2>
+      <p>ทดสอบว่าคะแนนของระบบ "ทายถูก" ไหม: ณ วันหนึ่ง ให้คะแนนการ์ดทุกใบด้วยข้อมูลที่มีถึงวันนั้น แล้วดูว่าอีก 7/30/90/180 วันต่อมาราคาไปทางไหน
+      ค่า <b>IC</b> คือความสัมพันธ์เชิงอันดับระหว่างคะแนนกับผลตอบแทนจริง (−1 ถึง 1) · มากกว่า 0.05 ถือว่ามีความหมายสำหรับของสะสม · ติดลบแปลว่าปัจจัยนั้นชี้ผิดทาง</p>
+      <p class="hint">อัปเดตล่าสุด: ${esc(rep?.updated || "ยังไม่มี")} · ข้อมูลราคาเก็บอัตโนมัติทุกวันด้วย GitHub Actions</p>
+    </div>
+    <div class="bt-grid">
+      <div class="panel">
+        <h3>ตลาดญี่ปุ่น — ทดสอบไปข้างหน้าจริง</h3>
+        <p class="hint">ราคาร้านในญี่ปุ่นทุกใบ เก็บตั้งแต่ ${esc(jp?.history_since || "–")}</p>
+        ${horizons.length ? horizons.map(([h, r]) => `<h4>ถือ ${h} วัน</h4>${resultTable(r)}`).join("")
+          : `<p>ยังมีประวัติไม่พอ — ผลแรกจะขึ้นประมาณ: ${Object.entries(jp?.ready_on || { 7: "7 วันหลังเริ่มเก็บ" }).map(([h, d]) => `<b>${h} วัน</b> ≈ ${esc(d)}`).join(" · ")}</p>`}
+      </div>
+      <div class="panel">
+        <h3>ตลาดอังกฤษ — เช็กโมเมนตัม 30 วัน (proxy)</h3>
+        <p class="hint">เทียบราคาเฉลี่ย 7 วันกับ 30 วันของ Cardmarket ทุกใบ ใช้ได้ตั้งแต่วันแรก แต่ไม่ใช่การทดสอบไปข้างหน้าจริง</p>
+        ${rep?.en_proxy_30d ? resultTable(rep.en_proxy_30d) : `<p class="status">ยังไม่มีข้อมูล</p>`}
+      </div>
+      <div class="panel">
+        <h3>บันทึกราคาขายของคุณ</h3>
+        <p class="hint">ถ้าตั้งเพดานเป็น "ราคากลางของครั้งก่อน − 15%" จะไม่จ่ายแพงกว่าราคาขายครั้งถัดไปบ่อยแค่ไหน</p>
+        ${log.tests ? `<dl class="kv">
+            <dt>การ์ดที่มีราคามากกว่า 1 ครั้ง</dt><dd>${log.cards}</dd>
+            <dt>จำนวนการทดสอบ</dt><dd>${log.tests}</dd>
+            <dt>เพดานปลอดภัย (ไม่จ่ายเกิน)</dt><dd>${pct(log.safeRate, 0)}</dd>
+            <dt>ราคาครั้งถัดไปเปลี่ยนเฉลี่ย</dt><dd>${pct(log.avgChange)}</dd></dl>
+          <div class="table-wrap"><table class="tbl"><thead><tr><th>วันที่</th><th>การ์ด</th><th class="num">เพดาน</th><th class="num">ขายจริง</th></tr></thead><tbody>
+            ${log.rows.map((t) => `<tr><td>${esc(t.date)}</td><td>${esc(t.name)}</td><td class="num">${fmt(t.cap)}</td><td class="num tone-${t.safe ? "good" : "bad"}">${fmt(t.next)}</td></tr>`).join("")}
+          </tbody></table></div>`
+          : `<p>ต้องมีการ์ดใบเดียวกัน (ชื่อ เกรด ภาษาเดียวกัน) ถูกบันทึกอย่างน้อย 2 ครั้ง</p>`}
+      </div>
+    </div>
+    <ul class="notes">${(rep?.notes || []).map((n) => `<li>${esc(n)}</li>`).join("")}</ul>`;
+}
+
+// ---------- ตั้งค่า ----------
+const tokenIn = $("#psa-token");
+tokenIn.value = store.get("pcs-psa-token", "");
+tokenIn.addEventListener("change", () => { store.set("pcs-psa-token", tokenIn.value.trim()); $("#settings-status").textContent = tokenIn.value ? "บันทึก token ในเบราว์เซอร์นี้แล้ว" : "ลบ token แล้ว"; });
+const jpyIn = $("#fx-jpy");
+if (jpyThb) jpyIn.value = jpyThb;
+jpyIn.addEventListener("change", () => { jpyThb = Number(jpyIn.value) || null; store.set("pcs-fx-jpy", jpyThb); });
 
 // ---------- start ----------
 renderRecommend();

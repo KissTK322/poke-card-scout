@@ -28,6 +28,8 @@
     <button role="tab" data-tab="recommend" aria-selected="true">แนะนำ</button>
     <button role="tab" data-tab="search">ค้นหา</button>
     <button role="tab" data-tab="appraise">ประเมิน / ใส่รูป</button>
+    <button role="tab" data-tab="log">บันทึกราคาขาย</button>
+    <button role="tab" data-tab="backtest">Backtest</button>
     <button role="tab" data-tab="saved">ที่บันทึกไว้</button>
     <button role="tab" data-tab="method">วิธีคิด</button>
   </nav>
@@ -55,15 +57,22 @@
     <!-- ค้นหา -->
     <section id="tab-search" class="tab">
       <form id="search-form" class="row">
-        <input id="q" type="search" placeholder="ชื่อการ์ด เช่น Umbreon, リザードン, ลิซาร์ดอน (ใส่เลขได้ เช่น pikachu 173)" required>
+        <input id="q" type="search" placeholder="ชื่อการ์ด + เลข เช่น Umbreon 215, ガラルニャース 117, ลิซาร์ดอน 201" required>
         <select id="q-lang" aria-label="ภาษา">
+          <option value="all">EN + JP + TH</option>
           <option value="en">EN</option>
           <option value="ja">JP</option>
           <option value="th">TH</option>
+          <option value="tcgdex">ภาษาอื่น (TCGdex)</option>
+        </select>
+        <select id="q-other" aria-label="ภาษาอื่น" hidden>
+          <option value="fr">FR</option><option value="de">DE</option><option value="es">ES</option><option value="it">IT</option>
+          <option value="pt">PT</option><option value="zh-tw">繁中</option><option value="zh-cn">简中</option><option value="ko">KO</option><option value="id">ID</option>
         </select>
         <button class="btn primary" type="submit">ค้นหา</button>
       </form>
-      <p class="hint">ภาษาญี่ปุ่นต้องพิมพ์ชื่อเป็นภาษาญี่ปุ่น (เช่น ニャース) · ภาษาไทยพิมพ์ชื่อไทย (เช่น พิคาชู)</p>
+      <p class="hint" id="coverage">กำลังโหลดฐานข้อมูล…</p>
+      <p class="hint">ญี่ปุ่นพิมพ์ชื่อญี่ปุ่น (ニャース) · ไทยพิมพ์ชื่อไทย (เนียส) · อังกฤษพิมพ์อังกฤษ — ใส่เลขการ์ดต่อท้ายเพื่อให้ตรงใบ</p>
       <div id="search-status" class="status"></div>
       <div id="search-grid" class="grid"></div>
     </section>
@@ -125,6 +134,28 @@
             </select>
           </label>
           <input type="hidden" name="image">
+          <input type="hidden" name="mktSell"><input type="hidden" name="mktBuy">
+          <fieldset id="market-box">
+            <legend>ข้อมูลตลาด (อัปเดตทุกวัน)</legend>
+            <div id="market-match" class="hint">พิมพ์ชื่อการ์ดแล้วระบบจะหาราคาตลาดให้</div>
+          </fieldset>
+          <fieldset id="psa-box">
+            <legend>PSA Population</legend>
+            <div class="two">
+              <label>PSA 10 ในระบบ (ใบ)<input name="pop10" type="number" min="0" inputmode="numeric" placeholder="ไม่ทราบ"></label>
+              <label>ส่งเกรดทั้งหมด (ใบ)<input name="popTotal" type="number" min="0" inputmode="numeric" placeholder="ไม่ทราบ"></label>
+            </div>
+            <div class="row">
+              <input id="psa-cert" inputmode="numeric" placeholder="เลข cert PSA ของการ์ดใบนี้ (ใบไหนก็ได้)">
+              <button class="btn small" type="button" id="psa-lookup">ดึง Pop จาก PSA</button>
+            </div>
+            <div id="psa-status" class="hint">ต้องใส่ PSA API token ในแท็บ "วิธีคิด" ก่อน (ฟรี 100 ครั้ง/วัน)</div>
+            <div class="row">
+              <span class="hint">ดึงไม่ได้? กรอกเองจาก</span>
+              <a class="btn small" target="_blank" rel="noopener" id="psa-pop-link" href="https://www.psacard.com/pop">PSA Pop Report</a>
+            </div>
+          </fieldset>
+          <div id="log-comps" class="hint"></div>
           <div class="actions">
             <button class="btn" type="reset">ล้าง</button>
             <button class="btn primary" type="button" id="save-btn">บันทึก</button>
@@ -135,6 +166,34 @@
       </div>
     </section>
 
+    <!-- บันทึกราคาขาย -->
+    <section id="tab-log" class="tab">
+      <div class="panel log-paste">
+        <h2>วางราคาปิดประมูล / ราคาขายจริง</h2>
+        <p class="hint">Copy โพสต์หรือคอมเมนต์จากกลุ่ม FB มาวางได้เลย (หลายโพสต์คั่นด้วยบรรทัดว่าง) ระบบจะแยกชื่อ เลขการ์ด ภาษา เจ้าเกรด เกรด ราคา และวันที่ให้ ตรวจแก้ในตารางก่อนกดบันทึก</p>
+        <textarea id="log-text" rows="7" placeholder="ตัวอย่าง:&#10;Galarian Meowth AR 117/103 PCG 10 JP&#10;ปิด 1,450 บาท 15/10/2569&#10;&#10;Umbreon VMAX Alt Art PSA 10 อังกฤษ จบที่ 2.5k"></textarea>
+        <div class="row"><button class="btn primary" id="log-parse" type="button">แยกข้อมูล</button><span class="hint" id="log-parse-status"></span></div>
+        <div id="log-preview"></div>
+      </div>
+      <div class="panel">
+        <div class="row space">
+          <h2>ราคาที่บันทึกแล้ว <span class="hint" id="log-count"></span></h2>
+          <div class="row">
+            <input id="log-filter" type="search" placeholder="กรองชื่อ">
+            <button class="btn small" id="log-csv" type="button">ส่งออก CSV</button>
+            <button class="btn small" id="log-json" type="button">สำรอง JSON</button>
+            <label class="btn small file-btn">นำเข้า JSON<input id="log-import" type="file" accept="application/json,.json" hidden></label>
+          </div>
+        </div>
+        <div id="log-table"></div>
+      </div>
+    </section>
+
+    <!-- Backtest -->
+    <section id="tab-backtest" class="tab">
+      <div id="bt-body" class="bt"></div>
+    </section>
+
     <!-- ที่บันทึกไว้ -->
     <section id="tab-saved" class="tab">
       <div id="saved-list" class="saved"></div>
@@ -142,22 +201,40 @@
 
     <!-- วิธีคิด -->
     <section id="tab-method" class="tab prose">
+      <div class="panel settings">
+        <h2>ตั้งค่า</h2>
+        <label>PSA API token <span class="opt">(เก็บในเบราว์เซอร์นี้เท่านั้น สมัครฟรีที่ psacard.com/publicapi)</span>
+          <input id="psa-token" type="password" autocomplete="off" placeholder="วาง token ของคุณเอง"></label>
+        <label>1 JPY = ? บาท <input id="fx-jpy" type="number" step="0.001" inputmode="decimal"></label>
+        <p class="hint" id="settings-status"></p>
+      </div>
       <h2>ระบบคิดคะแนนอย่างไร</h2>
-      <p>คะแนนเต็ม 100 มาจาก 6 ส่วน:</p>
+      <p>คะแนนเต็ม 100 มาจาก 8 ส่วน (ส่วนที่ไม่มีข้อมูลจะถูกตัดออกและเฉลี่ยน้ำหนักใหม่):</p>
       <ul>
-        <li><b>ตัวละคร 25%</b> ระดับ S (ลิซาร์ดอน, พิคาชู, แบล็กกี้, มิว) → A (ลูเกีย, เก็งการ์, ตระกูลอีวุย ฯลฯ) → B → C</li>
-        <li><b>ความหายาก 20%</b> SAR/SIR/Alt Art สูงสุด · AR/IR ปานกลาง · RR ต่ำ</li>
-        <li><b>เจ้าเกรด 15%</b> PSA/BGS Black Label สูงสุด · CGC · TAG · เจ้าไทย/เจ้าเล็กต่ำ (ขายต่อยาก)</li>
-        <li><b>ภาษา 10%</b> EN 1.0 · JP 0.9 · TH 0.6 (ตลาดแคบ)</li>
-        <li><b>อายุชุด 10%</b> ชุดเพิ่งออกเสี่ยงที่ราคาจะลง</li>
-        <li><b>ความคุ้มของราคา 20%</b> ราคาประมูลเทียบราคาสูงสุดที่ควรจ่าย</li>
+        <li><b>ตัวละคร 22%</b> ระดับ S (ลิซาร์ดอน, พิคาชู, แบล็กกี้, มิว) → A → B → C</li>
+        <li><b>ความหายาก 17%</b> SAR/SIR/Alt Art สูงสุด · AR/IR ปานกลาง · RR ต่ำ</li>
+        <li><b>เจ้าเกรด 12%</b> PSA/BGS Black Label สูงสุด · CGC · TAG · เจ้าไทย/เจ้าเล็กต่ำ</li>
+        <li><b>ภาษา 8%</b> EN 1.0 · JP 0.9 · TH 0.6</li>
+        <li><b>อายุชุด 8%</b> ชุดเพิ่งออกเสี่ยงที่ราคาจะลง</li>
+        <li><b>ความคุ้ม 18%</b> ราคาประมูลเทียบเพดาน</li>
+        <li><b>สภาพคล่อง 8%</b> ส่วนต่างราคาร้านรับซื้อ/ขายในญี่ปุ่น (bid-ask spread) ยิ่งห่างยิ่งขายต่อยาก</li>
+        <li><b>ซัพพลาย 7%</b> จำนวน PSA 10 ในระบบและอัตราที่ได้ 10 (ได้ง่าย = จะมีของเพิ่มเรื่อย ๆ)</li>
       </ul>
       <h3>ราคาที่ควรประมูลไม่เกิน</h3>
-      <p>1) หามูลค่ายุติธรรมต่อใบ: ถ้ามีราคาขายจริงของใบเกรดเดียวกัน ใช้ค่ามัธยฐานเลย ถ้าไม่มี ใช้สูตร<br>
+      <p>1) มูลค่ายุติธรรมต่อใบ: ใช้มัธยฐานราคาขายจริงของใบเกรดเดียวกันก่อน (จากบันทึกราคาขายของคุณ) ถ้าไม่มี ใช้สูตร<br>
       <code>ใบดิบ + (PSA10 − ใบดิบ) × ค่า k ของเจ้าเกรด × ตัวคูณเกรด</code></p>
       <p>ค่า k: PSA 1.0 · BGS Black Label 1.4 · CGC Pristine 0.95 · BGS 0.85 · CGC 0.75 · SGC 0.7 · TAG 0.6 · ARS 0.5 · SQC 0.3 · PCG 0.2 · เจ้าเล็ก 0.15</p>
-      <p>2) หักส่วนเผื่อ: เก็บสะสม 10% / ขายต่อ 30% + ส่วนลดสภาพคล่อง (เจ้าเกรดและภาษา) + 10% ถ้าข้อมูลราคาน้อย แล้วหักค่าส่ง</p>
-      <p class="fine">ตัวเลขทั้งหมดอยู่ใน <code>js/data.js</code> แก้ได้ตามตลาด · ระบบนี้ช่วยตัดสินใจเท่านั้น ไม่ใช่คำแนะนำการลงทุน · เช็กราคาขายจริงจาก eBay sold, PriceCharting, SNKRDUNK, TCG Thailand และเช็กเลข cert/QR ของกรอบเกรดทุกครั้ง</p>
+      <p>2) หักส่วนเผื่อ: เก็บสะสม 10% / ขายต่อ 30% + ส่วนลดสภาพคล่อง + 10% ถ้าข้อมูลราคาน้อย แล้วหักค่าส่ง</p>
+      <h3>แหล่งข้อมูล (อัปเดตอัตโนมัติทุกวันตี 2)</h3>
+      <ul>
+        <li><b>ญี่ปุ่น:</b> ราคาขายถูกสุด + ราคารับซื้อสูงสุดจากหลายร้าน ผ่าน ポケカジラ (pokecazilla.com) ทุกใบ</li>
+        <li><b>อังกฤษ:</b> TCGplayer market + Cardmarket (เฉลี่ย 1/7/30 วัน) ผ่าน pokemontcg.io ทุกใบ</li>
+        <li><b>ไทย:</b> รายชื่อการ์ดไทยทุกใบ + รูปจริงจากเว็บทางการ Pokémon Asia (ยังไม่มีแหล่งราคาสาธารณะ → ใช้บันทึกราคาขายของคุณ)</li>
+        <li><b>ภาษาอื่น:</b> FR/DE/ES/IT/PT/จีน/เกาหลี/อินโดฯ ผ่าน TCGdex</li>
+        <li><b>PSA Pop:</b> PSA Public API ด้วย token ของคุณเอง</li>
+        <li><b>ราคาปิดประมูลไทย:</b> คุณวางจากกลุ่ม FB ในแท็บ "บันทึกราคาขาย" (เก็บในเครื่อง ส่งออก/นำเข้าได้)</li>
+      </ul>
+      <p class="fine">ตัวเลขทั้งหมดอยู่ใน <code>js/data.js</code> ปรับตาม "น้ำหนักที่แนะนำ" ในแท็บ Backtest ได้ · ระบบนี้ช่วยตัดสินใจเท่านั้น ไม่ใช่คำแนะนำการลงทุน · เช็กเลข cert/QR ของกรอบเกรดทุกครั้ง</p>
     </section>
   </main>
 
