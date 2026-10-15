@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Poke Card Scout</title>
+  <meta name="description" content="ระบบช่วยเลือกซื้อการ์ดโปเกมอน: การ์ดแนะนำ ค้นหา ประเมินราคา และราคาประมูลสูงสุด">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">◓</span>
+      <div>
+        <h1>Poke Card Scout</h1>
+        <p class="sub">ใบไหนน่าเก็บ · ประมูลได้ไม่เกินเท่าไร</p>
+      </div>
+    </div>
+    <div class="fx" title="อัตราแลกเปลี่ยนที่ใช้แปลงราคา USD → บาท">
+      1 USD = <input id="fx" type="number" step="0.01" inputmode="decimal"> ฿
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="recommend" aria-selected="true">แนะนำ</button>
+    <button role="tab" data-tab="search">ค้นหา</button>
+    <button role="tab" data-tab="appraise">ประเมิน / ใส่รูป</button>
+    <button role="tab" data-tab="saved">ที่บันทึกไว้</button>
+    <button role="tab" data-tab="method">วิธีคิด</button>
+  </nav>
+
+  <main>
+    <!-- แนะนำ -->
+    <section id="tab-recommend" class="tab active">
+      <div class="filters">
+        <div class="chips" id="f-cat"></div>
+        <div class="row">
+          <select id="f-lang" aria-label="ภาษา">
+            <option value="all">ทุกภาษา</option>
+            <option value="en">อังกฤษ</option>
+            <option value="ja">ญี่ปุ่น</option>
+            <option value="th">ไทย</option>
+          </select>
+          <select id="f-budget" aria-label="งบ"></select>
+          <input id="f-text" type="search" placeholder="กรองชื่อ เช่น charizard, มิว">
+        </div>
+      </div>
+      <div id="rec-grid" class="grid"></div>
+      <p class="fine">ราคา EN ดึงสดจาก TCGplayer ผ่าน TCGdex (ราคาใบดิบ) · งบเป็นค่าประมาณ ณ ต.ค. 2026 · ไม่ใช่คำแนะนำการลงทุน</p>
+    </section>
+
+    <!-- ค้นหา -->
+    <section id="tab-search" class="tab">
+      <form id="search-form" class="row">
+        <input id="q" type="search" placeholder="ชื่อการ์ด เช่น Umbreon, リザードン, ลิซาร์ดอน (ใส่เลขได้ เช่น pikachu 173)" required>
+        <select id="q-lang" aria-label="ภาษา">
+          <option value="en">EN</option>
+          <option value="ja">JP</option>
+          <option value="th">TH</option>
+        </select>
+        <button class="btn primary" type="submit">ค้นหา</button>
+      </form>
+      <p class="hint">ภาษาญี่ปุ่นต้องพิมพ์ชื่อเป็นภาษาญี่ปุ่น (เช่น ニャース) · ภาษาไทยพิมพ์ชื่อไทย (เช่น พิคาชู)</p>
+      <div id="search-status" class="status"></div>
+      <div id="search-grid" class="grid"></div>
+    </section>
+
+    <!-- ประเมิน -->
+    <section id="tab-appraise" class="tab">
+      <div class="appraise">
+        <form id="ap-form" class="panel">
+          <div class="photo-drop" id="photo-drop">
+            <input id="photo" type="file" accept="image/*" hidden>
+            <div class="crop-wrap">
+              <img id="photo-preview" alt="" hidden>
+              <div id="crop-sel" hidden></div>
+            </div>
+            <div id="photo-empty">
+              <strong>ใส่รูปการ์ด/กรอบเกรด</strong>
+              <span>ระบบจะอ่านป้ายกรอบ (ชื่อ เลขการ์ด เจ้าเกรด เกรด) ให้อัตโนมัติ</span>
+              <button class="btn" type="button" id="photo-btn">เลือกรูป</button>
+            </div>
+          </div>
+          <div id="photo-tools" class="row" hidden>
+            <span class="hint">ลากบนรูปเพื่อเลือกป้ายของกรอบเกรด (อ่านแม่นกว่าอ่านทั้งรูป)</span>
+            <button class="btn small primary" type="button" id="ocr-crop" disabled>อ่านป้ายส่วนที่เลือก</button>
+            <button class="btn small" type="button" id="photo-change">เปลี่ยนรูป</button>
+          </div>
+          <div id="ocr-status" class="status"></div>
+
+          <label>ชื่อการ์ด<input name="name" required placeholder="เช่น Galarian Meowth AR 117/103"></label>
+          <div class="two">
+            <label>ภาษา<select name="lang"></select></label>
+            <label>จำนวนใบในล็อต<input name="qty" type="number" min="1" value="1"></label>
+          </div>
+          <div class="two">
+            <label>เจ้าเกรด<select name="grader"></select></label>
+            <label id="grade-wrap">เกรด<select name="grade"></select></label>
+            <label id="cond-wrap" hidden>สภาพ<select name="condition"></select></label>
+          </div>
+          <div class="two">
+            <label>ระดับความหายาก<select name="rarity"></select></label>
+            <label>อายุชุด<select name="era"></select></label>
+          </div>
+
+          <fieldset>
+            <legend>ราคาที่ขายได้จริง (บาท/ใบ) · ใส่หลายราคาคั่นด้วยเว้นวรรค</legend>
+            <label>ใบสภาพ/เกรดเดียวกันเป๊ะ <span class="opt">(แม่นที่สุด)</span><input name="compsSame" inputmode="decimal" placeholder="เช่น 650 700 580"></label>
+            <label>ใบดิบ (Raw NM)<input name="compsRaw" inputmode="decimal" placeholder="เช่น 190 220 240"></label>
+            <label>PSA 10<input name="compsPsa10" inputmode="decimal" placeholder="เช่น 2000"></label>
+            <label>PSA10 แพงกว่าใบดิบกี่เท่า <span class="opt">(ใช้เมื่อไม่มีราคาครบ · เว้นว่าง = อัตโนมัติ)</span><input name="ratio" type="number" step="0.1" placeholder="อัตโนมัติ"></label>
+          </fieldset>
+
+          <div class="two">
+            <label>ราคาประมูลตอนนี้ (รวมทั้งล็อต)<input name="bid" type="number" inputmode="decimal" placeholder="เช่น 1450"></label>
+            <label>ค่าส่ง/ค่าธรรมเนียม<input name="shipping" type="number" inputmode="decimal" value="0"></label>
+          </div>
+          <label>ซื้อเพื่อ
+            <select name="purpose">
+              <option value="collect">เก็บสะสม (เผื่อส่วนต่าง 10%)</option>
+              <option value="flip">ขายต่อ/เก็งกำไร (เผื่อส่วนต่าง 30%)</option>
+            </select>
+          </label>
+          <input type="hidden" name="image">
+          <div class="actions">
+            <button class="btn" type="reset">ล้าง</button>
+            <button class="btn primary" type="button" id="save-btn">บันทึก</button>
+          </div>
+        </form>
+
+        <aside class="panel result" id="result" aria-live="polite"></aside>
+      </div>
+    </section>
+
+    <!-- ที่บันทึกไว้ -->
+    <section id="tab-saved" class="tab">
+      <div id="saved-list" class="saved"></div>
+    </section>
+
+    <!-- วิธีคิด -->
+    <section id="tab-method" class="tab prose">
+      <h2>ระบบคิดคะแนนอย่างไร</h2>
+      <p>คะแนนเต็ม 100 มาจาก 6 ส่วน:</p>
+      <ul>
+        <li><b>ตัวละคร 25%</b> ระดับ S (ลิซาร์ดอน, พิคาชู, แบล็กกี้, มิว) → A (ลูเกีย, เก็งการ์, ตระกูลอีวุย ฯลฯ) → B → C</li>
+        <li><b>ความหายาก 20%</b> SAR/SIR/Alt Art สูงสุด · AR/IR ปานกลาง · RR ต่ำ</li>
+        <li><b>เจ้าเกรด 15%</b> PSA/BGS Black Label สูงสุด · CGC · TAG · เจ้าไทย/เจ้าเล็กต่ำ (ขายต่อยาก)</li>
+        <li><b>ภาษา 10%</b> EN 1.0 · JP 0.9 · TH 0.6 (ตลาดแคบ)</li>
+        <li><b>อายุชุด 10%</b> ชุดเพิ่งออกเสี่ยงที่ราคาจะลง</li>
+        <li><b>ความคุ้มของราคา 20%</b> ราคาประมูลเทียบราคาสูงสุดที่ควรจ่าย</li>
+      </ul>
+      <h3>ราคาที่ควรประมูลไม่เกิน</h3>
+      <p>1) หามูลค่ายุติธรรมต่อใบ: ถ้ามีราคาขายจริงของใบเกรดเดียวกัน ใช้ค่ามัธยฐานเลย ถ้าไม่มี ใช้สูตร<br>
+      <code>ใบดิบ + (PSA10 − ใบดิบ) × ค่า k ของเจ้าเกรด × ตัวคูณเกรด</code></p>
+      <p>ค่า k: PSA 1.0 · BGS Black Label 1.4 · CGC Pristine 0.95 · BGS 0.85 · CGC 0.75 · SGC 0.7 · TAG 0.6 · ARS 0.5 · SQC 0.3 · PCG 0.2 · เจ้าเล็ก 0.15</p>
+      <p>2) หักส่วนเผื่อ: เก็บสะสม 10% / ขายต่อ 30% + ส่วนลดสภาพคล่อง (เจ้าเกรดและภาษา) + 10% ถ้าข้อมูลราคาน้อย แล้วหักค่าส่ง</p>
+      <p class="fine">ตัวเลขทั้งหมดอยู่ใน <code>js/data.js</code> แก้ได้ตามตลาด · ระบบนี้ช่วยตัดสินใจเท่านั้น ไม่ใช่คำแนะนำการลงทุน · เช็กราคาขายจริงจาก eBay sold, PriceCharting, SNKRDUNK, TCG Thailand และเช็กเลข cert/QR ของกรอบเกรดทุกครั้ง</p>
+    </section>
+  </main>
+
+  <dialog id="modal"><div id="modal-body"></div></dialog>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
