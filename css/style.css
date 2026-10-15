@@ -102,6 +102,8 @@ input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 
   padding: 2px 8px; border-radius: 999px; letter-spacing: .03em;
 }
 .badge.risk { left: auto; right: 8px; }
+.badge.src { top: auto; bottom: 8px; right: 8px; background: rgba(214,64,43,.9); font-weight: 500; white-space: normal; text-align: center; }
+.card > .badge.src.static { position: relative; inset: auto; margin: -28px 8px 4px; align-self: flex-start; }
 .card .body { padding: 10px 12px 12px; display: grid; gap: 4px; }
 .card h3 { margin: 0; font-size: 14px; line-height: 1.35; }
 .card .meta { color: var(--muted); font-size: 12px; }

@@ -136,12 +136,14 @@ async function hydrateRec(w, el) {
     const card = w.tcg ? (recCache.get(w.tcg) || await getCard(w.tcg)) : null;
     if (card) recCache.set(w.tcg, card);
     let src = imgUrl(card);
-    if (w.img) { const alt = await getCard(w.img).catch(() => null); src = imgUrl(alt) || src; }
+    let borrowed = card && !card.image && card.lang === "th" ? "ja" : null;
+    if (w.img) { const alt = await getCard(w.img).catch(() => null); if (imgUrl(alt)) { src = imgUrl(alt); borrowed = w.img.split(":")[0]; } }
     if (src) {
       const art = el.querySelector(".art");
       const img = Object.assign(document.createElement("img"), { loading: "lazy", src, alt: w.name });
       img.onerror = () => img.remove();
       art.querySelector(".ph")?.replaceWith(img);
+      if (borrowed) art.insertAdjacentHTML("beforeend", `<span class="badge src">ภาพจากเวอร์ชัน ${LANG_BADGE[borrowed]} · หน้าการ์ดจริงเป็นภาษา${w.lang === "th" ? "ไทย" : "ญี่ปุ่น"}</span>`);
     }
     const thb = priceThb(card?.price);
     if (thb) el.querySelector("[data-price]").textContent = card.lang === "en"
@@ -179,7 +181,7 @@ async function runSearch(raw, lang, target = { grid: $("#search-grid"), status: 
     res = res.reverse(); // ชุดใหม่มาก่อน
     target.status.textContent = `พบ ${res.length} ใบ — แตะเพื่อดูราคาและประเมิน`;
     target.grid.innerHTML = res.map((c) => `<article class="card" data-ref="${lang}:${esc(c.id)}">
-      ${artHtml(imgUrl({ ...c, lang, set: { id: c.id.split("-")[0] } }), c.name, LANG_BADGE[lang])}
+      ${artHtml(imgUrl({ ...c, lang, set: { id: c.id.split("-")[0] } }), c.name, LANG_BADGE[lang])}${lang === "th" && !c.image ? `<span class="badge src static">ภาพจากเวอร์ชัน JP</span>` : ""}
       <div class="body"><h3>${esc(c.name)}</h3><div class="meta">${esc(c.id)}</div></div></article>`).join("");
     return res;
   } catch {
@@ -197,7 +199,8 @@ $("#search-grid").addEventListener("click", async (e) => {
 // ---------- modal รายละเอียด ----------
 function openDetail(card, rec, fallbackImg) {
   const name = rec?.name || card?.name || "";
-  const src = (card && imgUrl(card, "high")) || fallbackImg;
+  const src = (card && card.image && imgUrl(card, "high")) || fallbackImg || (card && imgUrl(card, "high"));
+  const borrowedNote = (card && !card.image && src) || (rec?.img && src) ? `<p class="hint">รูปนี้ยืมจากเวอร์ชันภาษาอื่นที่ภาพวาดเดียวกัน หน้าการ์ดจริงเป็นภาษา${(rec?.lang || card?.lang) === "th" ? "ไทย" : "ญี่ปุ่น"}</p>` : "";
   const thb = priceThb(card?.price);
   const q = encodeURIComponent(`${card?.name || name} ${card?.localId || ""} ${card?.set?.name || ""}`.trim());
   $("#modal-body").innerHTML = `<button class="btn small close" data-close>ปิด</button>
@@ -206,6 +209,7 @@ function openDetail(card, rec, fallbackImg) {
       <div>
         <h2>${esc(name)}</h2>
         <div class="meta">${esc([card?.set?.name, card?.localId && `#${card.localId}`, card?.rarity].filter(Boolean).join(" · "))}</div>
+        ${borrowedNote}
         <dl class="kv" style="margin:14px 0">
           <dt>${card?.lang && card.lang !== "en" ? "ราคาเวอร์ชัน EN (อ้างอิง)" : "ราคาตลาดใบดิบ"}</dt><dd>${thb ? `${fmt(thb)}` : "ไม่มีข้อมูล"}</dd>
           ${card?.price?.usd ? `<dt>TCGplayer (${esc(card.price.variant)})</dt><dd>$${card.price.usd}</dd>` : ""}
